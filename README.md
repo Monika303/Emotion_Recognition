@@ -14,14 +14,14 @@ It ensures the entire project remains  accessible, organized, and easy to extend
 
 ## ✨ Key Features
 - Well-structured and intuitive folder organization  
-- Reproducible experiments through Colab notebooks  
+- Reproducible experiments through  Colab notebooks  
 - Clear separation of code, data, and results  
 - Ready for scaling or integration with new components  
 
 ---
 
 ## 🛠️ Technologies & Tools
-- **Python**
+- **Python** 
 - **NumPy, Pandas**
 - **TensorFlow / Keras / PyTorch**
 - **Matplotlib / Seaborn**
