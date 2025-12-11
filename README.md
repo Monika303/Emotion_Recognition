@@ -8,7 +8,7 @@ This repository centralizes:
 - Evaluation results  
 - Supporting documentation and visuals  
 
-It ensures the entire project remains accessible, organized, and easy to extend.
+It ensures the entire project remains  accessible, organized, and easy to extend.
 
 ---
 
