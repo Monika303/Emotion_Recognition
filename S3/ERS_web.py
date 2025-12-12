@@ -1,11 +1,15 @@
-from tensorflow.keras.models import load_model
 import numpy as np
 from PIL import Image
 import streamlit as st
 import os
+import tensorflow as tf
 
-# Load the model
-model = load_model(r"C:\Users\user\OneDrive\Desktop\S3\best_emotion_model.keras")
+# Load TFLite model
+interpreter = tf.lite.Interpreter(model_path="best_emotion_model.tflite")
+interpreter.allocate_tensors()
+
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
 
 # FER2013 emotion labels
 emotion_labels = ['anger', 'disgust', 'fear', 'happiness', 'sadness', 'surprise', 'neutral']
@@ -32,47 +36,52 @@ emotion_effects = {
     'neutral': "😐🌀"
 }
 
-# --- Function to predict emotion ---
-def predict_emotion(img):
-    img_resized = img.resize((48, 48)).convert('L')
-    img_array = np.array(img_resized).astype('float32') / 255.0
-    img_array = np.expand_dims(img_array, axis=(0, -1))
-    prediction = model.predict(img_array)
-    return emotion_labels[np.argmax(prediction)]
+def predict_emotion(image):
+    # Convert image to 48x48 grayscale
+    img = image.resize((48, 48)).convert('L')
+    img_array = np.array(img, dtype=np.float32)
+
+    # Add batch and channel dimensions
+    input_data = np.expand_dims(img_array, axis=0)   # batch
+    input_data = np.expand_dims(input_data, axis=-1) # channel
+
+    # Set the tensor and invoke interpreter
+    interpreter.set_tensor(input_details[0]['index'], input_data)
+    interpreter.invoke()
+
+    # Get output and return predicted class index
+    output_data = interpreter.get_tensor(output_details[0]['index'])
+    return np.argmax(output_data)
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="Emotion Recognition", layout="centered")
 st.title("Emotion Recognition System 🎉")
 st.markdown("Upload a face image and see the predicted emotion with a matching song!")
 
-# File uploader with unique key
-uploaded_file = st.file_uploader(
-    "Choose an image...", 
-    type=["jpg", "jpeg", "png"], 
-    key="unique_image_upload"
-)
+# File uploader
+uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"], key="unique_image_upload")
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file)
-    
-    # Display image in normal size
     st.image(image, caption='Uploaded Image', use_container_width=True)
     
     # Predict emotion
-    emotion = predict_emotion(image)
+    emotion_index = predict_emotion(image)
+    emotion_label = emotion_labels[emotion_index]
     
-    # Display emotion in big fun text with emoji/effect
-    effect = emotion_effects.get(emotion, "")
+    # Get emoji/effect
+    effect = emotion_effects.get(emotion_label, "")
+    
+    # Display emotion
     st.markdown(
-        f"<h1 style='color: #ff4b4b; font-size: 60px; text-align:center'>{emotion.upper()} {effect}</h1>",
+        f"<h1 style='color: #ff4b4b; font-size: 60px; text-align:center'>{emotion_label.upper()} {effect}</h1>",
         unsafe_allow_html=True
     )
     
-    # Play corresponding song if file exists
-    song_file = emotion_songs.get(emotion)
+    # Play corresponding song
+    song_file = emotion_songs.get(emotion_label)
     if song_file and os.path.exists(song_file):
-        audio_file = open(song_file, 'rb')
-        audio_bytes = audio_file.read()
-        st.audio(audio_bytes, format='audio/mp3')
+        with open(song_file, 'rb') as audio_file:
+            st.audio(audio_file.read(), format='audio/mp3')
     else:
-        st.warning(f"Song file for {emotion} not found!")
+        st.warning(f"Song file for {emotion_label} not found!")
