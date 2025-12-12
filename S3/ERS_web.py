@@ -1,47 +1,31 @@
+import os
+from typing import Optional
+
 import numpy as np
 from PIL import Image
 import streamlit as st
-import os
 
-# Try to import a TFLite interpreter implementation
-Interpreter = None
+# Try to import TensorFlow Lite interpreter (assumes tensorflow or tflite-runtime is installed)
 try:
     import tflite_runtime.interpreter as tflite_interpreter  # type: ignore
     Interpreter = tflite_interpreter.Interpreter
-    _INTERP_BACKEND = "tflite-runtime"
 except Exception:
-    try:
-        import tensorflow as tf  # type: ignore
-        Interpreter = tf.lite.Interpreter
-        _INTERP_BACKEND = "tensorflow.lite"
-    except Exception:
-        Interpreter = None
-        _INTERP_BACKEND = None
+    import tensorflow as tf  # type: ignore
+    Interpreter = tf.lite.Interpreter
 
-# Helper: find model in a few likely locations
-def find_model(filename="best_emotion_model.tflite"):
-    candidates = []
-    # same dir as this script
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates.append(os.path.join(script_dir, filename))
-    # repo root (one level up from S3/)
-    candidates.append(os.path.join(script_dir, os.pardir, filename))
-    # current working directory
-    candidates.append(os.path.join(os.getcwd(), filename))
-    # explicit S3 folder
-    candidates.append(os.path.join(script_dir, "best_emotion_model.tflite"))
-    candidates = [os.path.normpath(p) for p in candidates]
-    for p in candidates:
-        if os.path.exists(p):
-            return p
-    return None
-
-# FER2013 emotion labels
-emotion_labels = ['anger', 'disgust', 'fear', 'happiness', 'sadness', 'surprise', 'neutral']
-
-# Map emotions to songs (use repo-relative paths)
+# --- Configuration ---
 script_dir = os.path.dirname(os.path.abspath(__file__))
-songs_dir = os.path.join(script_dir, "Songs")  # expects S3/Songs/
+# Look for model in common locations (adjust if your model is elsewhere)
+MODEL_CANDIDATES = [
+    os.path.join(script_dir, "best_emotion_model.tflite"),
+    os.path.join(script_dir, os.pardir, "best_emotion_model.tflite"),
+    os.path.join(os.getcwd(), "best_emotion_model.tflite"),
+]
+MODEL_PATH: Optional[str] = next((p for p in MODEL_CANDIDATES if os.path.exists(p)), None)
+
+# Labels and songs (use repo-relative S3/Songs/)
+emotion_labels = ['anger', 'disgust', 'fear', 'happiness', 'sadness', 'surprise', 'neutral']
+songs_dir = os.path.join(script_dir, "Songs")
 emotion_songs = {
     'anger': os.path.join(songs_dir, "angry.mp3"),
     'disgust': os.path.join(songs_dir, "disgust.mp3"),
@@ -49,10 +33,8 @@ emotion_songs = {
     'happiness': os.path.join(songs_dir, "happy.mp3"),
     'sadness': os.path.join(songs_dir, "sad.mp3"),
     'surprise': os.path.join(songs_dir, "surprise.mp3"),
-    'neutral': os.path.join(songs_dir, "neutral.mp3")
+    'neutral': os.path.join(songs_dir, "neutral.mp3"),
 }
-
-# effects
 emotion_effects = {
     'anger': "⚡💥",
     'disgust': "🤢🟢",
@@ -63,66 +45,52 @@ emotion_effects = {
     'neutral': "😐🌀"
 }
 
-# Attempt to locate and load the model
-MODEL_FILENAME = "best_emotion_model.tflite"
-MODEL_PATH = find_model(MODEL_FILENAME)
-
+# --- Load interpreter ---
 interpreter = None
 input_details = output_details = None
-
-if Interpreter is None:
-    st.error("No TFLite interpreter available: neither tflite-runtime nor tensorflow.lite could be imported. Check requirements.")
+if MODEL_PATH:
+    try:
+        interpreter = Interpreter(model_path=MODEL_PATH)
+        interpreter.allocate_tensors()
+        input_details = interpreter.get_input_details()
+        output_details = interpreter.get_output_details()
+    except Exception as e:
+        interpreter = None
+        st.error(f"Failed to load TFLite model: {e}")
 else:
-    if MODEL_PATH is None:
-        st.warning(f"TFLite model '{MODEL_FILENAME}' not found. Expected locations checked. Please add the model to the repo (e.g. repo root or S3/) and redeploy.")
-    else:
-        try:
-            interpreter = Interpreter(model_path=MODEL_PATH)
-            interpreter.allocate_tensors()
-            input_details = interpreter.get_input_details()
-            output_details = interpreter.get_output_details()
-            st.success(f"Loaded model from {MODEL_PATH} using {_INTERP_BACKEND}")
-        except Exception as e:
-            st.error(f"Failed to initialize TFLite Interpreter with model at {MODEL_PATH}. See details below.")
-            st.exception(e)
-            interpreter = None
+    st.warning("TFLite model not found. Place 'best_emotion_model.tflite' in the repo root or the S3 folder.")
 
-def predict_emotion(image: Image.Image):
+def predict_emotion(image: Image.Image) -> Optional[int]:
     if interpreter is None or input_details is None or output_details is None:
         return None
 
     img = image.resize((48, 48)).convert('L')
-    img_array = np.array(img, dtype=np.float32) / 255.0
-    input_data = np.expand_dims(img_array, axis=0)
-    if input_data.ndim == 3:
-        input_data = np.expand_dims(input_data, axis=-1)
+    arr = np.array(img, dtype=np.float32) / 255.0  # normalize 0-1
+    inp = np.expand_dims(arr, axis=0)  # batch
+    if inp.ndim == 3:
+        inp = np.expand_dims(inp, axis=-1)  # channel
 
     expected_dtype = input_details[0]['dtype']
-    try:
-        input_data = input_data.astype(expected_dtype)
-    except Exception:
-        input_data = input_data.astype(np.float32)
+    inp = inp.astype(expected_dtype)
 
+    # reshape if necessary
     try:
-        # reshape if necessary
-        input_shape = tuple(input_details[0]['shape'])
-        input_data = input_data.reshape(input_shape)
+        inp = inp.reshape(tuple(input_details[0]['shape']))
     except Exception:
         pass
 
-    interpreter.set_tensor(input_details[0]['index'], input_data)
+    interpreter.set_tensor(input_details[0]['index'], inp)
     interpreter.invoke()
-    output_data = interpreter.get_tensor(output_details[0]['index'])
-    return int(np.argmax(output_data))
+    out = interpreter.get_tensor(output_details[0]['index'])
+    return int(np.argmax(out))
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="Emotion Recognition", layout="centered")
-st.title("Emotion Recognition System 🎉")
-st.markdown("Upload a face image and see the predicted emotion with a matching song!")
+st.title("Emotion Recognition System")
+st.caption("Upload a face image and see the predicted emotion with a matching song.")
 
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"], key="unique_image_upload")
-
-if uploaded_file is not None:
+uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+if uploaded_file:
     try:
         image = Image.open(uploaded_file)
     except Exception as e:
@@ -130,26 +98,18 @@ if uploaded_file is not None:
         image = None
 
     if image:
-        st.image(image, caption='Uploaded Image', use_container_width=True)
-
-        emotion_index = predict_emotion(image)
-        if emotion_index is None:
-            st.info("Prediction unavailable (model not loaded).")
+        st.image(image, use_container_width=True)
+        idx = predict_emotion(image)
+        if idx is None:
+            st.info("Prediction unavailable (model not loaded). Ensure 'best_emotion_model.tflite' is in the repo and requirements include TensorFlow or tflite-runtime.")
         else:
-            if 0 <= emotion_index < len(emotion_labels):
-                emotion_label = emotion_labels[emotion_index]
-            else:
-                emotion_label = "unknown"
+            label = emotion_labels[idx] if 0 <= idx < len(emotion_labels) else "unknown"
+            effect = emotion_effects.get(label, "")
+            st.markdown(f"## {label.upper()} {effect}")
 
-            effect = emotion_effects.get(emotion_label, "")
-            st.markdown(
-                f"<h1 style='color: #ff4b4b; font-size: 60px; text-align:center'>{emotion_label.upper()} {effect}</h1>",
-                unsafe_allow_html=True
-            )
-
-            song_file = emotion_songs.get(emotion_label)
-            if song_file and os.path.exists(song_file):
-                with open(song_file, 'rb') as audio_file:
-                    st.audio(audio_file.read(), format='audio/mp3')
+            song_path = emotion_songs.get(label)
+            if song_path and os.path.exists(song_path):
+                with open(song_path, "rb") as f:
+                    st.audio(f.read(), format="audio/mp3")
             else:
-                st.warning(f"Song file for {emotion_label} not found at expected path: {song_file}")
+                st.info("No matching song found for this emotion.")
